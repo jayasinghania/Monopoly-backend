@@ -2,6 +2,7 @@ const Room = require("../models/Room");
 const Player = require("../models/Player");
 const { generateRoomCode } = require("../utils/helpers");
 const { send, broadcastState, broadcastLog } = require("../utils/broadcast");
+const { emitPlayerReconnected } = require("../utils/lifecycle");
 const { AVAILABLE_TOKENS, MAX_PLAYERS, MIN_PLAYERS } = require("../data/constants");
 
 // ============================================================
@@ -36,26 +37,36 @@ function handleJoinRoom(ws, client, msg, rooms, clients) {
   const room = rooms.get(code);
   if (!room) return send(ws, { type: "error", message: "Room not found" });
 
-  // Handle reconnection during game
-  if (room.state !== "lobby") {
-    const existing = room.players.find((p) => p.name === name && !p.connected);
-    if (existing) {
+  // Handle reconnection (works in both lobby and in-game).
+  // Match by name; allow rejoin even if old socket hasn't been marked disconnected yet
+  // (fast reconnects can beat the close event), but only if the previous client is gone
+  // or the player is flagged disconnected.
+  const existing = room.players.find((p) => p.name === name);
+  if (existing) {
+    const oldClientStillActive = [...clients.values()].some(
+      (c) => c.id === existing.id && c.roomCode === code
+    );
+    if (!oldClientStillActive || !existing.connected) {
       existing.connected = true;
       existing.id = client.id;
       client.roomCode = code;
       client.playerIndex = room.players.indexOf(existing);
+      send(ws, { type: "roomJoined", code });
       broadcastLog(room, clients, `${name} reconnected!`);
       broadcastState(room, clients);
+      emitPlayerReconnected(code, client.playerIndex);
       return;
     }
+    return send(ws, { type: "error", message: "Name already taken" });
+  }
+
+  // New player joining — only allowed in lobby.
+  if (room.state !== "lobby") {
     return send(ws, { type: "error", message: "Game already in progress" });
   }
 
   if (room.players.length >= MAX_PLAYERS) {
     return send(ws, { type: "error", message: `Room full (max ${MAX_PLAYERS})` });
-  }
-  if (room.players.some((p) => p.name === name)) {
-    return send(ws, { type: "error", message: "Name already taken" });
   }
 
   const player = new Player(client.id, name);

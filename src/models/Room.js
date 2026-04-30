@@ -40,6 +40,9 @@ class Room {
     // Event log
     this.logs = [];
     this.bankruptPlayers = [];
+
+    // Tracking for cleanup sweeper (ms timestamp; null = currently active)
+    this.lastActivityAt = Date.now();
   }
 
   // ----------------------------------------------------------
