@@ -169,10 +169,50 @@ function handleDismissCard(ws, client, msg, rooms, clients) {
   broadcastState(room, clients);
 }
 
+/**
+ * Allow a player to voluntarily declare bankruptcy (forfeit).
+ * Useful when a player is in debt and doesn't want to keep selling.
+ */
+function handleDeclareBankruptcy(ws, client, msg, rooms, clients) {
+  const room = rooms.get(client.roomCode);
+  if (!room || room.state !== "playing") return;
+
+  const player = room.players[client.playerIndex];
+  if (player.bankrupt) return;
+
+  const bc = makeBroadcast(clients);
+  const { checkBankruptcy, endGame } = require("../engine/bankruptcy");
+
+  player.declareBankrupt();
+  room.bankruptPlayers.push(client.playerIndex);
+  bc.log(room, `🏳️ ${player.name} forfeited the game!`);
+
+  // Return all properties to bank
+  for (const [propId, prop] of Object.entries(room.properties)) {
+    if (prop.owner === client.playerIndex) {
+      room.removeProperty(propId);
+    }
+  }
+
+  // If it was their turn, advance
+  if (room.currentTurn === client.playerIndex) {
+    room.advanceTurn();
+    bc.log(room, `${room.getCurrentPlayer().name}'s turn`);
+  }
+
+  // Check if game is over
+  if (room.getActivePlayerCount() <= 1) {
+    endGame(room, bc);
+  }
+
+  broadcastState(room, clients);
+}
+
 module.exports = {
   handleRollDice,
   handleBuyProperty,
   handleSkipBuy,
   handleEndTurn,
   handleDismissCard,
+  handleDeclareBankruptcy,
 };

@@ -54,6 +54,7 @@ const MESSAGE_HANDLERS = {
   skipBuy:      turn.handleSkipBuy,
   endTurn:      turn.handleEndTurn,
   dismissCard:  turn.handleDismissCard,
+  declareBankruptcy: turn.handleDeclareBankruptcy,
 
   // Jail
   payJailFine:  jail.handlePayJailFine,
