@@ -9,6 +9,7 @@ const lobby = require("./handlers/lobbyHandler");
 const turn = require("./handlers/turnHandler");
 const jail = require("./handlers/jailHandler");
 const trade = require("./handlers/tradeHandler");
+const property = require("./handlers/propertyHandler");
 
 // Utils
 const { send, broadcastState, broadcastLog } = require("./utils/broadcast");
@@ -57,6 +58,12 @@ const MESSAGE_HANDLERS = {
   // Jail
   payJailFine:  jail.handlePayJailFine,
   useJailCard:  jail.handleUseJailCard,
+
+  // Property management
+  buyHouse:     property.handleBuyHouse,
+  sellHouse:    property.handleSellHouse,
+  mortgage:     property.handleMortgage,
+  unmortgage:   property.handleUnmortgage,
 
   // Trading
   proposeTrade: trade.handleProposeTrade,
