@@ -26,6 +26,24 @@ const ABANDONED_ROOM_TTL_MS = 10 * 60_000;     // delete rooms where everyone ha
 const ROOM_CLEANUP_INTERVAL_MS = 60_000;       // run cleanup sweep every minute
 
 // ============================================================
+// CRASH HANDLERS
+// Without these, ANY unhandled error inside an async callback,
+// setTimeout, or Promise rejection kills the entire Node process —
+// disconnecting every player and dropping every room.
+// ============================================================
+
+process.on("uncaughtException", (err, origin) => {
+  console.error("⚠️  uncaughtException:", err);
+  console.error("   origin:", origin);
+  // Intentionally do NOT exit — keep the server alive for other rooms.
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("⚠️  unhandledRejection at:", promise);
+  console.error("   reason:", reason);
+});
+
+// ============================================================
 // SERVER BOOTSTRAP
 // ============================================================
 
@@ -163,59 +181,67 @@ function clearDisconnectTimer(roomCode, playerIndex) {
  * so the game keeps moving. They can still reconnect later.
  */
 function onGracePeriodExpired(roomCode, playerIndex) {
-  const room = rooms.get(roomCode);
-  if (!room) return;
+  try {
+    const room = rooms.get(roomCode);
+    if (!room) return;
 
-  const timers = disconnectTimers.get(roomCode);
-  if (timers) timers.delete(playerIndex);
+    const timers = disconnectTimers.get(roomCode);
+    if (timers) timers.delete(playerIndex);
 
-  const player = room.players[playerIndex];
-  if (!player || player.connected || player.bankrupt) return;
+    const player = room.players[playerIndex];
+    if (!player || player.connected || player.bankrupt) return;
 
-  // Only auto-skip if the game is still in progress and it's this player's turn.
-  if (room.state !== "playing") return;
-  if (room.currentTurn !== playerIndex) return;
+    // Only auto-skip if the game is still in progress and it's this player's turn.
+    if (room.state !== "playing") return;
+    if (room.currentTurn !== playerIndex) return;
 
-  // Clear any pending action (e.g., if they were prompted to buy and walked away)
-  // and any unresolved doubles state, then advance the turn.
-  player.pendingAction = null;
-  player.rolledDoubles = false;
-  room.advanceTurn();
+    // Clear any pending action (e.g., if they were prompted to buy and walked away)
+    // and any unresolved doubles state, then advance the turn.
+    player.pendingAction = null;
+    player.rolledDoubles = false;
+    room.advanceTurn();
 
-  broadcastLog(room, clients, `⏭️ ${player.name} was inactive — turn skipped.`);
-  broadcastLog(room, clients, `${room.getCurrentPlayer().name}'s turn`);
-  broadcastState(room, clients);
+    broadcastLog(room, clients, `⏭️ ${player.name} was inactive — turn skipped.`);
+    broadcastLog(room, clients, `${room.getCurrentPlayer().name}'s turn`);
+    broadcastState(room, clients);
+  } catch (err) {
+    console.error("onGracePeriodExpired error (non-fatal):", err);
+  }
 }
 
 /**
  * Handle client disconnect — mark player as disconnected and start grace timer.
  */
 function handleDisconnect(ws) {
-  const client = clients.get(ws);
-  if (!client?.roomCode) return;
+  try {
+    const client = clients.get(ws);
+    if (!client?.roomCode) return;
 
-  const room = rooms.get(client.roomCode);
-  if (!room) return;
+    const room = rooms.get(client.roomCode);
+    if (!room) return;
 
-  const player = room.players.find((p) => p.id === client.id);
-  if (!player) return;
+    const player = room.players.find((p) => p.id === client.id);
+    if (!player) return;
 
-  player.connected = false;
-  room.lastActivityAt = Date.now();
-  broadcastLog(room, clients, `${player.name} disconnected.`);
-  broadcastState(room, clients);
+    player.connected = false;
+    room.lastActivityAt = Date.now();
+    broadcastLog(room, clients, `${player.name} disconnected.`);
+    broadcastState(room, clients);
 
-  // Start grace timer for this player
-  const playerIndex = room.players.indexOf(player);
-  const timers = getRoomTimers(client.roomCode);
+    // Start grace timer for this player
+    const playerIndex = room.players.indexOf(player);
+    const timers = getRoomTimers(client.roomCode);
 
-  // Replace any existing timer for this player
-  if (timers.has(playerIndex)) clearTimeout(timers.get(playerIndex));
+    // Replace any existing timer for this player
+    if (timers.has(playerIndex)) clearTimeout(timers.get(playerIndex));
 
-  const timer = setTimeout(() => {
-    onGracePeriodExpired(client.roomCode, playerIndex);
-  }, DISCONNECT_GRACE_MS);
-  timers.set(playerIndex, timer);
+    const timer = setTimeout(() => {
+      onGracePeriodExpired(client.roomCode, playerIndex);
+    }, DISCONNECT_GRACE_MS);
+    timers.set(playerIndex, timer);
+  } catch (err) {
+    console.error("handleDisconnect error (non-fatal):", err);
+  }
 }
 
 // Expose so lobbyHandler's rejoin logic can clear the timer.
@@ -232,11 +258,15 @@ onPlayerReconnected(handlePlayerReconnected);
 // ============================================================
 
 const heartbeatInterval = setInterval(() => {
-  wss.clients.forEach((ws) => {
-    if (!ws.isAlive) return ws.terminate();
-    ws.isAlive = false;
-    try { ws.ping(); } catch {}
-  });
+  try {
+    wss.clients.forEach((ws) => {
+      if (!ws.isAlive) return ws.terminate();
+      ws.isAlive = false;
+      try { ws.ping(); } catch {}
+    });
+  } catch (err) {
+    console.error("Heartbeat error (non-fatal):", err);
+  }
 }, HEARTBEAT_INTERVAL_MS);
 
 wss.on("close", () => clearInterval(heartbeatInterval));
@@ -248,38 +278,42 @@ wss.on("close", () => clearInterval(heartbeatInterval));
 // ============================================================
 
 const cleanupInterval = setInterval(() => {
-  const now = Date.now();
+  try {
+    const now = Date.now();
 
-  for (const [code, room] of rooms) {
-    const anyConnected = room.players.some((p) => p.connected);
+    for (const [code, room] of rooms) {
+      const anyConnected = room.players.some((p) => p.connected);
 
-    if (!anyConnected && !room.lastActivityAt) {
-      // Track when the room first became fully empty
-      room.lastActivityAt = now;
-    }
-    if (anyConnected) {
-      room.lastActivityAt = now;
-    }
-
-    const idleFor = now - (room.lastActivityAt || now);
-
-    let shouldDelete = false;
-    if (room.state === "finished" && idleFor > FINISHED_ROOM_TTL_MS) {
-      shouldDelete = true;
-    } else if (!anyConnected && idleFor > ABANDONED_ROOM_TTL_MS) {
-      shouldDelete = true;
-    }
-
-    if (shouldDelete) {
-      // Clear any lingering disconnect timers for this room
-      const timers = disconnectTimers.get(code);
-      if (timers) {
-        for (const t of timers.values()) clearTimeout(t);
-        disconnectTimers.delete(code);
+      if (!anyConnected && !room.lastActivityAt) {
+        // Track when the room first became fully empty
+        room.lastActivityAt = now;
       }
-      rooms.delete(code);
-      console.log(`🧹 Cleaned up room ${code} (state=${room.state}, idle=${Math.round(idleFor / 1000)}s)`);
+      if (anyConnected) {
+        room.lastActivityAt = now;
+      }
+
+      const idleFor = now - (room.lastActivityAt || now);
+
+      let shouldDelete = false;
+      if (room.state === "finished" && idleFor > FINISHED_ROOM_TTL_MS) {
+        shouldDelete = true;
+      } else if (!anyConnected && idleFor > ABANDONED_ROOM_TTL_MS) {
+        shouldDelete = true;
+      }
+
+      if (shouldDelete) {
+        // Clear any lingering disconnect timers for this room
+        const timers = disconnectTimers.get(code);
+        if (timers) {
+          for (const t of timers.values()) clearTimeout(t);
+          disconnectTimers.delete(code);
+        }
+        rooms.delete(code);
+        console.log(`🧹 Cleaned up room ${code} (state=${room.state}, idle=${Math.round(idleFor / 1000)}s)`);
+      }
     }
+  } catch (err) {
+    console.error("Cleanup sweeper error (non-fatal):", err);
   }
 }, ROOM_CLEANUP_INTERVAL_MS);
 
